@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
-import BoardView from './components/BoardView';
+import BoardView from './components/BoardView.tsx';
 
 interface User {
   id: string;
