@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
+import BoardView from './components/BoardView';
 
 interface User {
   id: string;
@@ -22,6 +23,7 @@ const App: React.FC = () => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLogin, setIsLogin] = useState(true);
+  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
 
   // Form states
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
@@ -116,6 +118,7 @@ const App: React.FC = () => {
     localStorage.removeItem('token');
     setUser(null);
     setBoards([]);
+    setSelectedBoardId(null);
     if (socket) {
       socket.disconnect();
       setSocket(null);
@@ -141,6 +144,16 @@ const App: React.FC = () => {
     }
   };
 
+  // If viewing a specific board
+  if (selectedBoardId && user) {
+    return (
+      <BoardView 
+        boardId={selectedBoardId} 
+        onBack={() => setSelectedBoardId(null)} 
+      />
+    );
+  }
+
   // Loading State
   if (isLoading) {
     return (
@@ -151,7 +164,7 @@ const App: React.FC = () => {
     );
   }
 
-  // Authentication Forms
+  // Authentication Forms (same as before)
   if (!user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
@@ -335,7 +348,7 @@ const App: React.FC = () => {
               <div
                 key={board.id}
                 className="group cursor-pointer transform hover:scale-105 transition-transform duration-200"
-                onClick={() => alert(`🚀 Board functionality coming soon!\n\nBoard: ${board.title}`)}
+                onClick={() => setSelectedBoardId(board.id)}
               >
                 <div 
                   className="h-32 rounded-lg mb-3 flex items-center justify-center relative overflow-hidden shadow-md"
