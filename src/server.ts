@@ -4,10 +4,10 @@ import helmet from 'helmet';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
-
 import { sequelize } from './models';
 import { initializeWebSocket } from './config/websocket';
 import { ApiResponse } from './types';
+import path from 'path';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -52,6 +52,18 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
   next();
 });
+
+if (process.env.NODE_ENV === 'production') {
+  // Serve static files from the React build
+  app.use(express.static(path.join(__dirname, 'public')));
+  
+  // Serve React app for all non-API routes
+  app.get('*', (req: Request, res: Response) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    }
+  });
+}
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
