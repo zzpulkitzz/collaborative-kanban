@@ -31,7 +31,7 @@ RUN npm ci --only=production && npm cache clean --force
 COPY --from=backend-builder /app/dist ./dist
 
 # Copy built frontend from frontend-builder stage to the correct location
-COPY --from=frontend-builder /app/client/dist ./dist
+COPY --from=frontend-builder /app/client/dist ./dist/public
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs
