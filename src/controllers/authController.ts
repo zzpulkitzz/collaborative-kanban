@@ -10,6 +10,7 @@ export class AuthController {
   static async register(req: Request, res: Response): Promise<void> {
     try {
       const { username, email, password, fullName }: RegisterRequest = req.body;
+      console.log(username, email, password, fullName)
 
       // Validate required fields
       if (!username || !email || !password) {
