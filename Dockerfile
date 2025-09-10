@@ -28,6 +28,19 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --only=production
 
+RUN npm ci --only=production && npm cache clean --force
+
+
+
+# Copy built backend from backend-builder stage
+
+COPY --from=backend-builder /app/dist ./dist
+
+
+
+# Copy built frontend from frontend-builder stage to the correct location
+
+COPY --from=frontend-builder /app/client/dist ./dist/public
 # Copy TypeScript config and source code
 COPY tsconfig.json ./
 COPY src ./src
