@@ -11,6 +11,7 @@ export async function sendAssignmentEmail(args: {
 }) {
     console.log("Sending Emailll")
   const { to, cardTitle, boardTitle, assignedBy, type } = args;
+  console.log(process.env.SENDGRID_VERIFIED_SENDER,process.env.SENDGRID_API_KEY)
   return sgMail.send({
     to,
     from: process.env.SENDGRID_VERIFIED_SENDER!, // Your verified "from" address
