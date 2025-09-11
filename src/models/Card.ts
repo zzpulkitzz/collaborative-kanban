@@ -8,6 +8,8 @@ interface CardAttributes {
   position: number;
   columnId: string;
   assigneeId?: string;
+  assigneeEmail?: string;  // ✅ New field
+  creatorId: string;       // ✅ New field
   dueDate?: Date;
   labels?: string[];
   priority: 'low' | 'medium' | 'high';
@@ -26,6 +28,8 @@ class Card extends Model<CardAttributes, CardCreationAttributes> implements Card
   public position!: number;
   public columnId!: string;
   public assigneeId?: string;
+  public assigneeEmail?: string;
+  public creatorId!: string;
   public dueDate?: Date;
   public labels?: string[];
   public priority!: 'low' | 'medium' | 'high';
@@ -86,6 +90,17 @@ Card.init(
         model: 'users',
         key: 'id'
       }
+    },
+    assigneeEmail: {          // ✅ New field
+      type: DataTypes.STRING,
+      allowNull: true,
+      validate: {
+        isEmail: true,
+      },
+    },
+    creatorId: {              // ✅ New field
+      type: DataTypes.UUID,
+      allowNull: false,
     },
     dueDate: {
       type: DataTypes.DATE,
