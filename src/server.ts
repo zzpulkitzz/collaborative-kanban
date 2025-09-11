@@ -23,7 +23,7 @@ const server = http.createServer(app);
 // Initialize Socket.IO with TypeScript types
 const io = new SocketIOServer(server, {
   cors: {
-    origin: process.env.WEBSOCKET_ORIGIN || "http://localhost:3000",
+    origin: process.env.WEBSOCKET_ORIGIN || "http://localhost:3001",
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -40,7 +40,7 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: process.env.WEBSOCKET_ORIGIN || "http://localhost:3000",
+  origin: process.env.WEBSOCKET_ORIGIN || "http://localhost:3001",
   credentials: true
 }));
 
@@ -58,7 +58,7 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'public')));
   
   // Serve React app for all non-API routes
-  app.use((req: Request, res: Response, next) => {
+  app.use((req: Request, res: Response, next: NextFunction) => {
     if (!req.path.startsWith("/api")) {
       res.sendFile(path.join(__dirname, "public", "index.html"));
     } else {

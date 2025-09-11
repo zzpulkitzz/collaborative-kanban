@@ -46,7 +46,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       if (response.data.success) {
         setUser(response.data.data.user);
-        initializeSocket(token);
+        
         
       }
     } catch (error) {
@@ -57,13 +57,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const initializeSocket = (token: string) => {
-      const newSocket = io('http://localhost:3001', { auth: { token } });
-      newSocket.on('connect', () => console.log('🔗 Connected to server'));
-      newSocket.on('disconnect', () => console.log('📡 Disconnected from server'));
-      setSocket(newSocket);
-    };
-
+ 
     
       
 

@@ -18,9 +18,9 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { createPortal } from 'react-dom';
 import { useDroppable } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
-
+import { format } from 'date-fns'; // npm install date-fns
 import PresenceIndicator from './PresenceIndicator';
-
+import CardModal from './CardModal';
 // Add these state variables to BoardView component
 
 
@@ -40,17 +40,21 @@ interface User {
 }
 
 interface Card {
-  id: string;
-  title: string;
-  description?: string;
-  position: number;
-  columnId: string;
-  assigneeId?: string;
-  dueDate?: string;
-  labels?: string[];
-  priority: 'low' | 'medium' | 'high';
-  assignee?: User;
-}
+    id: string;
+    title: string;
+    description?: string;
+    position: number;
+    columnId: string;
+    assigneeId?: string;
+    assigneeEmail?: string;
+    creatorId?: string;
+    dueDate?: Date;
+    labels?: string[];
+    priority: 'low' | 'medium' | 'high';
+    completedAt?: Date;
+    createdAt?: Date;
+    updatedAt?: Date;
+  }
 
 interface Column {
   id: string;
@@ -95,7 +99,18 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
   const [isDeletingCard, setIsDeletingCard] = useState(false);
   const [presenceUsers, setPresenceUsers] = useState<PresenceUser[]>([]);
   const [totalOnlineUsers, setTotalOnlineUsers] = useState(0);
-
+  const [cardModal, setCardModal] = useState<{
+    isOpen: boolean;
+    mode: 'create' | 'edit';
+    card?: Card | null;
+    columnId?: string;
+  }>({
+    isOpen: false,
+    mode: 'create',
+    card: null,
+    columnId: undefined
+  });
+  const [isUpdatingCard, setIsUpdatingCard] = useState(false);
   // Sensors for drag and drop
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -182,28 +197,63 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
     setSocket(newSocket);
   };
 
-  const createCard = async (columnId: string) => {
-    if (!newCardTitle.trim()) return;
-
+  const createCardOptimistic = async (cardData: Partial<Card>): Promise<boolean> => {
+    setIsUpdatingCard(true);
+    
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post('/api/cards', {
-        title: newCardTitle,
-        columnId,
-        description: 'New card created from board'
-      }, {
+      const response = await axios.post('/api/cards', cardData, {
         headers: { Authorization: `Bearer ${token}` }
       });
-
+  
       if (response.data.success) {
-        setNewCardTitle('');
-        setActiveColumnId(null);
-        fetchBoard(); // Refresh to get updated data
+        // Emit socket event for real-time updates
+        if (socket) {
+          socket.emit('card_created', {
+            boardId: boardId,
+            card: response.data.data.card
+          });
+        }
+        
+        // Refresh board data
+        fetchBoard();
+        return true;
+      } else {
+        throw new Error('Server rejected the card creation');
       }
     } catch (error) {
       console.error('Failed to create card:', error);
       alert('❌ Failed to create card');
+      return false;
+    } finally {
+      setIsUpdatingCard(false);
     }
+  };
+  
+  // Update modal handlers
+  const openCreateCardModal = (columnId: string) => {
+    setCardModal({
+      isOpen: true,
+      mode: 'create',
+      columnId: columnId
+    });
+  };
+  
+  const openEditCardModal = (card: Card) => {
+    setCardModal({
+      isOpen: true,
+      mode: 'edit',
+      card: card
+    });
+  };
+  
+  const closeCardModal = () => {
+    setCardModal({
+      isOpen: false,
+      mode: 'create',
+      card: null,
+      columnId: undefined
+    });
   };
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -421,6 +471,70 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
     }
   };
   
+
+  const updateCardOptimistic = async (cardId: string, updates: Partial<Card>): Promise<boolean> => {
+    setIsUpdatingCard(true);
+    
+    // Store original state for potential rollback
+    const originalBoard = { ...board };
+    
+    // Optimistically update UI immediately
+    setBoard(prevBoard => {
+      if (!prevBoard?.columns) return prevBoard;
+      
+      return {
+        ...prevBoard,
+        columns: prevBoard.columns.map(column => ({
+          ...column,
+          cards: column.cards?.map(card => 
+            card.id === cardId 
+              ? { ...card, ...updates }
+              : card
+          ) || []
+        }))
+      };
+    });
+  
+    try {
+      // Send request to server
+      const token = localStorage.getItem('token');
+      const response = await axios.put(`/api/cards/${cardId}`, updates, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+  
+      if (response.data.success) {
+        // Server confirmed - emit socket event for other users
+        if (socket) {
+          socket.emit('card_updated', {
+            boardId: boardId,
+            cardId: cardId,
+            updates: updates,
+            updatedCard: response.data.data.card
+          });
+        }
+        
+        // Fetch fresh data to ensure consistency
+        setTimeout(() => fetchBoard(), 100);
+        
+        return true;
+      } else {
+        throw new Error('Server rejected the update');
+      }
+    } catch (error) {
+      console.error('Failed to update card:', error);
+      
+      // Rollback optimistic update
+      setBoard(originalBoard);
+      
+      alert('❌ Failed to update card. Changes have been reverted.');
+      return false;
+    } finally {
+      setIsUpdatingCard(false);
+    }
+  };
+
+
+  
   // Add this before the return statement in BoardView
   const openDeleteCardModal = (cardId: string, cardTitle: string) => {
     console.log("felete intialitesd")
@@ -503,8 +617,10 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
                 onNewCardTitleChange={setNewCardTitle}
                 onStartAddingCard={() => setActiveColumnId(column.id)}
                 onCancelAddingCard={() => setActiveColumnId(null)}
-                onCreateCard={() => createCard(column.id)}
+                onCreateCard={() => console.log("pew")}
                 onDeleteCard={openDeleteCardModal} 
+                onEditCard={openEditCardModal}
+                onOpenCreateModal={openCreateCardModal}
               />
               
             ))}
@@ -533,9 +649,9 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
                       </div>
                     )}
                     
-                    {activeCard.assignee && (
+                    {activeCard.assigneeEmail && (
                       <div className="w-6 h-6 bg-primary-600 rounded-full flex items-center justify-center text-white text-xs font-semibold">
-                        {activeCard.assignee.username.charAt(0).toUpperCase()}
+                        {activeCard.assigneeEmail.charAt(0).toUpperCase()}
                       </div>
                     )}
                   </div>
@@ -548,7 +664,16 @@ const BoardView: React.FC<BoardViewProps> = ({ boardId, onBack,user }) => {
         </div>
         
       </div>
-      
+      <CardModal
+  isOpen={cardModal.isOpen}
+  onClose={closeCardModal}
+  mode={cardModal.mode}
+  card={cardModal.card}
+  columnId={cardModal.columnId}
+  onCreate={createCardOptimistic}
+  onUpdate={updateCardOptimistic}
+  isLoading={isUpdatingCard}
+/>
     </div>
   );
 };
@@ -563,6 +688,8 @@ const Column: React.FC<{
     onCancelAddingCard: () => void;
     onCreateCard: () => void;
     onDeleteCard: (cardId: string, cardTitle: string) => void;
+    onEditCard: (card: Card) => void;
+    onOpenCreateModal: (columnId: string) => void;
   }> = ({ 
     column, 
     isAddingCard, 
@@ -571,7 +698,9 @@ const Column: React.FC<{
     onStartAddingCard,
     onCancelAddingCard,
     onCreateCard,
-    onDeleteCard
+    onDeleteCard,
+    onEditCard,
+    onOpenCreateModal
   }) => {
     const cardIds = column.cards?.map(card => card.id) || [];
   
@@ -612,7 +741,7 @@ const Column: React.FC<{
             isOver ? 'bg-blue-25 border-blue-200' : ''
           }`}>
             {column.cards?.map((card) => (
-              <CardItem key={card.id} card={card} onDelete={onDeleteCard} />
+              <CardItem key={card.id} card={card} onDelete={onDeleteCard} onEdit={()=>{onEditCard(card)}} />
             ))}
             
             {/* Drop Indicator */}
@@ -653,14 +782,14 @@ const Column: React.FC<{
           </div>
         ) : (
           <button
-            onClick={onStartAddingCard}
-            className="mt-3 w-full text-left p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-lg transition-colors flex items-center"
-          >
-            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-            </svg>
-            Add a card
-          </button>
+    onClick={() => onOpenCreateModal(column.id)} // ✅ Use modal instead of inline form
+    className="mt-3 w-full text-left p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-lg transition-colors flex items-center"
+  >
+    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+    </svg>
+    Add a card
+  </button>
         )}
       </div>
     );
@@ -669,7 +798,8 @@ const Column: React.FC<{
 const CardItem: React.FC<{ 
     card: Card; 
     onDelete: (cardId: string, cardTitle: string) => void;
-  }> = ({ card, onDelete }) => {
+    onEdit: () => void;
+  }> = ({ card, onDelete, onEdit }) => {
     const {
       attributes,
       listeners,
@@ -689,7 +819,19 @@ const CardItem: React.FC<{
       transform: CSS.Transform.toString(transform),
       transition,
     };
-  
+    const getPriorityColor = (priority: string) => {
+        switch (priority) {
+          case 'high': return 'bg-red-100 text-red-800 border-red-200';
+          case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+          case 'low': return 'bg-green-100 text-green-800 border-green-200';
+          default: return 'bg-gray-100 text-gray-800 border-gray-200';
+        }
+      };
+    
+      const isOverdue = card.dueDate && new Date(card.dueDate) < new Date();
+      const isDueSoon = card.dueDate && 
+        new Date(card.dueDate) > new Date() && 
+        new Date(card.dueDate) < new Date(Date.now() + 24 * 60 * 60 * 1000);
     return (
       <div
         ref={setNodeRef}
@@ -697,63 +839,132 @@ const CardItem: React.FC<{
         {...attributes}
         className={`bg-white rounded-lg p-3 shadow-sm border border-gray-200 cursor-pointer hover:shadow-md transition-all group ${
           isDragging ? 'opacity-50 rotate-2 scale-105' : ''
-        }`}
+        }${isOverdue ? 'border-l-4 border-l-red-500' : isDueSoon ? 'border-l-4 border-l-yellow-500' : ''}`}
       >
-        {/* Drag Handle */}
-        <div className="flex items-start justify-between mb-2">
-          <h4 className="font-medium text-gray-900 flex-1 pr-2">{card.title}</h4>
-          <div className="flex items-center space-x-1">
-            {/* Drag Handle Icon */}
-            <button
-              {...listeners}
-              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 transition-all duration-200 p-1 rounded cursor-grab active:cursor-grabbing"
-              title="Drag card"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
-              </svg>
-            </button>
+        <div className="flex items-start justify-between mb-3">
+        <div className="flex-1 pr-2">
+          <h4 className="font-semibold text-gray-900 text-sm leading-tight mb-1">
+            {card.title}
+          </h4>
+          
+          {/* Priority Badge */}
+          <div className="flex items-center space-x-2 mb-2">
+            <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getPriorityColor(card.priority)}`}>
+              {card.priority.toUpperCase()}
+            </span>
             
-            {/* Delete Button */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(card.id, card.title);
-              }}
-              className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all duration-200 p-1 rounded hover:bg-red-50"
-              title="Delete card"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
+            {/* Due Date Badge */}
+            {card.dueDate && (
+              <span className={`px-2 py-1 text-xs font-medium rounded-full border ${
+                isOverdue 
+                  ? 'bg-red-100 text-red-800 border-red-200' 
+                  : isDueSoon 
+                  ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
+                  : 'bg-blue-100 text-blue-800 border-blue-200'
+              }`}>
+                {isOverdue ? '⚠️ ' : isDueSoon ? '⏰ ' : '📅 '}
+                {format(new Date(card.dueDate), 'MMM dd')}
+              </span>
+            )}
           </div>
         </div>
-  
-        {card.description && (
-          <p className="text-sm text-gray-600 mb-2">{card.description}</p>
-        )}
-        
-        <div className="flex items-center justify-between">
-          {card.labels && card.labels.length > 0 && (
-            <div className="flex space-x-1">
-              {card.labels.map((label, index) => (
-                <span
-                  key={index}
-                  className="inline-block px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
+
+        {/* Action Buttons */}
+        <div className="flex items-center space-x-1">
+          {/* Edit Button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit();
+            }}
+            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-all duration-200 p-1 rounded hover:bg-blue-50"
+            title="Edit card"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+
+          {/* Drag Handle */}
+          <button
+            {...listeners}
+            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 transition-all duration-200 p-1 rounded cursor-grab active:cursor-grabbing"
+            title="Drag card"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+            </svg>
+          </button>
           
-          {card.assignee && (
-            <div className="w-6 h-6 bg-primary-600 rounded-full flex items-center justify-center text-white text-xs font-semibold">
-              {card.assignee.username.charAt(0).toUpperCase()}
+          {/* Delete Button */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(card.id, card.title);
+            }}
+            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 transition-all duration-200 p-1 rounded hover:bg-red-50"
+            title="Delete card"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Card Description */}
+      {card.description && (
+        <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+          {card.description}
+        </p>
+      )}
+
+      {/* Labels */}
+      {card.labels && card.labels.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {card.labels.slice(0, 3).map((label, index) => (
+            <span
+              key={index}
+              className="inline-block px-2 py-1 text-xs bg-purple-100 text-purple-800 rounded-md border border-purple-200"
+            >
+              {label}
+            </span>
+          ))}
+          {card.labels.length > 3 && (
+            <span className="inline-block px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md border border-gray-200">
+              +{card.labels.length - 3}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Card Footer */}
+      <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+        {/* Assignee Info */}
+        <div className="flex items-center space-x-2">
+          {card.assigneeEmail && (
+            <div className="flex items-center space-x-1">
+              <div className="w-6 h-6 bg-primary-600 rounded-full flex items-center justify-center text-white text-xs font-semibold">
+                {card.assigneeEmail.charAt(0).toUpperCase()}
+              </div>
+              <span className="text-xs text-gray-600 max-w-[100px] truncate">
+                {card.assigneeEmail}
+              </span>
             </div>
           )}
         </div>
+
+        {/* Card Metadata */}
+        <div className="flex items-center space-x-1 text-xs text-gray-500">
+          {/* Comments count (placeholder) */}
+          <div className="flex items-center space-x-1">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <span>0</span>
+          </div>
+        </div>
+      </div>
       </div>
     );
   };

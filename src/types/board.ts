@@ -24,6 +24,7 @@ export interface CreateBoardRequest {
     dueDate?: Date;
     labels?: string[];
     position: number;
+    assigneeEmail?: string;
   }
   
   export interface MoveCardRequest {

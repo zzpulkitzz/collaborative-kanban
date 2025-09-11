@@ -6,10 +6,11 @@ import { ApiResponse } from '../types';
 import { io } from '../server';
 import redis from '../config/redis';
 import {Op} from 'sequelize';
+import { sendAssignmentEmail } from '../utils/sendEmail';
 export class CardController {
   static async createCard(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      const { title, description, columnId, assigneeId, dueDate, labels }: CreateCardRequest = req.body;
+      const { title, description, columnId, assigneeId, dueDate, labels,assigneeEmail }: CreateCardRequest = req.body;
       const userId = req.user!.id;
 
       if (!title || !columnId) {
@@ -44,20 +45,42 @@ export class CardController {
         title,
         description,
         columnId,
-        assigneeId,
         dueDate,
         labels: labels || [],
-        position: cardCount
+        position: cardCount,
+        creatorId: userId,
+        assigneeEmail: assigneeEmail
       });
-
+      console.log(card.id)
       // Fetch card with associations
-      const completeCard = await Card.findByPk(card.id, {
+      const completeCard = await Card.findByPk(card.id,{
         include: [
           { model: User, as: 'assignee', attributes: ['id', 'username', 'fullName', 'avatar'] },
-          { model: Column, as: 'column' }
+          { model: User, as: 'creator', attributes: ['id', 'username', 'fullName', 'avatar'] },
+          { 
+            model: Column, 
+            as: 'column',
+            include: [{ 
+              model: Board, 
+              as: 'board',
+              attributes: ['id', 'title', 'ownerId']
+            }]
+          }
         ]
-      });
-
+      }
+    );
+      console.log("ye",assigneeEmail,completeCard)
+      if (assigneeEmail && completeCard?.dataValues?.title) {
+        console.log("SENDING")
+        const assignedByUser = await User.findByPk(userId);
+        await sendAssignmentEmail({
+          to: assigneeEmail,
+          cardTitle: completeCard?.dataValues?.title,
+          boardTitle: completeCard.column.board.title,
+          assignedBy: assignedByUser?.fullName || assignedByUser?.username || 'Someone',
+          type: 'created'
+        });
+      }
       // Log audit event
       await AuditLog.create({
         action: 'CARD_CREATED',
@@ -65,7 +88,7 @@ export class CardController {
         entityId: card.id,
         boardId: column.boardId,
         userId,
-        metadata: { title, columnId, assigneeId }
+        metadata: { title, columnId, assigneeEmail }
       });
 
       // Emit real-time update
@@ -97,110 +120,173 @@ export class CardController {
   static async updateCard(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { cardId } = req.params;
-      const { title, description, assigneeId, dueDate, labels, priority } = req.body;
       const userId = req.user!.id;
-
-      // Use Redis lock for optimistic concurrency control
-      const lockKey = `card_lock:${cardId}`;
-      const lockValue = `${userId}:${Date.now()}`;
-      
-      const locked = await redis.set(lockKey, lockValue, 'PX', 5000, 'NX');
-      if (!locked) {
+      const updates = req.body;
+  
+      // ✅ Store old values for audit logging
+      const oldCard = await Card.findByPk(cardId, {
+        include: [
+          { model: Column, as: 'column', include: [{ model: Board, as: 'board' }] }
+        ]
+      });
+  
+      if (!oldCard) {
         const response: ApiResponse = {
           success: false,
-          error: 'Card is currently being edited by another user'
+          error: 'Card not found'
         };
-        res.status(409).json(response);
+        res.status(404).json(response);
         return;
       }
-
-      try {
-        const card = await Card.findOne({
-          where: { id: cardId },
-          include: [
-            { model: Column, as: 'column', include: [{ model: Board, as: 'board' }] },
-            { model: User, as: 'assignee', attributes: ['id', 'username', 'fullName', 'avatar'] }
-          ]
-        });
-
-        if (!card //|| card.column.board.ownerId !== userId) {
-        ){
+  
+      // ✅ Check permissions - board owner OR card creator can edit
+      const canEdit = oldCard.column.board.ownerId === userId || oldCard.creatorId === userId;
+      if (!canEdit) {
+        const response: ApiResponse = {
+          success: false,
+          error: 'Access denied. Only board owners or card creators can edit cards.'
+        };
+        res.status(403).json(response);
+        return;
+      }
+  
+      // ✅ Use Redis lock for optimistic concurrency control (if you have Redis)
+      let lockKey: string | null = null;
+      if (process.env.REDIS_URL && redis) {
+        lockKey = `card_lock:${cardId}`;
+        const lockValue = `${userId}:${Date.now()}`;
+        
+        const locked = await redis.set(lockKey, lockValue, 'PX', 5000, 'NX');
+        if (!locked) {
           const response: ApiResponse = {
             success: false,
-            error: 'Card not found or access denied'
+            error: 'Card is currently being edited by another user'
           };
-          res.status(404).json(response);
+          res.status(409).json(response);
           return;
         }
-
+      }
+  
+      try {
+        // ✅ Store old values for comparison
         const oldValues = {
-          title: card.title,
-          description: card.description,
-          assigneeId: card.assigneeId,
-          dueDate: card.dueDate,
-          labels: card.labels,
-          priority: card.priority
+          title: oldCard.title,
+          description: oldCard.description,
+          assigneeId: oldCard.assigneeId,
+          assigneeEmail: oldCard.assigneeEmail,
+          dueDate: oldCard.dueDate,
+          labels: oldCard.labels,
+          priority: oldCard.priority
         };
-
-        // Update card fields
-        if (title !== undefined) card.title = title;
-        if (description !== undefined) card.description = description;
-        if (assigneeId !== undefined) card.assigneeId = assigneeId;
-        if (dueDate !== undefined) card.dueDate = dueDate;
-        if (labels !== undefined) card.labels = labels;
-        if (priority !== undefined) card.priority = priority;
-
-        await card.save();
-
-        // Reload with associations
-        await card.reload({
+  
+        // ✅ Update the card
+        await oldCard.update(updates);
+  
+        // ✅ Fetch updated card with all associations
+        const updatedCard = await Card.findByPk(cardId, {
           include: [
-            { model: Column, as: 'column' },
-            { model: User, as: 'assignee', attributes: ['id', 'username', 'fullName', 'avatar'] }
+            { model: User, as: 'assignee', attributes: ['id', 'username', 'fullName', 'avatar'] },
+            { model: User, as: 'creator', attributes: ['id', 'username', 'fullName', 'avatar'] },
+            { 
+              model: Column, 
+              as: 'column',
+              include: [{ 
+                model: Board, 
+                as: 'board',
+                attributes: ['id', 'title', 'ownerId']
+              }]
+            }
           ]
         });
+        
+        // 🌟 Send email if assigneeEmail changed and is not empty
+    if (
+      updates.assigneeEmail &&
+      updates.assigneeEmail !== oldValues.assigneeEmail &&
+      updatedCard?.column?.board?.title
+    ) {
+      const assignedByUser = await User.findByPk(userId);
+      await sendAssignmentEmail({
+        to: updates.assigneeEmail,
+        cardTitle: updatedCard.title,
+        boardTitle: updatedCard.column.board.title,
+        assignedBy: assignedByUser?.fullName || assignedByUser?.username || 'Someone',
+        type: 'updated'
+      });
+    }
 
-        // Log audit event
+        // ✅ Log audit event (uncomment when ready)
+        const auditAction = updates.assigneeEmail !== oldValues.assigneeEmail ? 'CARD_ASSIGNED' : 'CARD_UPDATED';
+        
         await AuditLog.create({
-          action: assigneeId !== oldValues.assigneeId ? 'CARD_ASSIGNED' : 'CARD_UPDATED',
+          action: auditAction,
           entityType: 'card',
-          entityId: card.id,
-          boardId: card.column.boardId,
+          entityId: cardId,
+          boardId: updatedCard!.column.board.id,
           userId,
-          changes: { before: oldValues, after: { title, description, assigneeId, dueDate, labels, priority } }
+          changes: { 
+            before: oldValues, 
+            after: {
+              title: updatedCard!.title,
+              description: updatedCard!.description,
+              assigneeId: updatedCard!.assigneeId,
+              assigneeEmail: updatedCard!.assigneeEmail,
+              dueDate: updatedCard!.dueDate,
+              labels: updatedCard!.labels,
+              priority: updatedCard!.priority
+            }
+          }
         });
-
-        // Emit real-time update
-        io.to(`board_${card.column.boardId}`).emit('card_updated', {
-          card,
-          boardId: card.column.boardId,
-          userId,
-          changes: { title, description, assigneeId, dueDate, labels, priority },
-          timestamp: new Date()
-        });
-
+  
+        // ✅ Emit real-time update to board members
+        const io = req.app.get('io'); // Assuming you store io in app
+        if (io) {
+          io.to(`board_${updatedCard!.column.board.id}`).emit('card_updated', {
+            card: updatedCard,
+            boardId: updatedCard!.column.board.id,
+            userId,
+            changes: updates,
+            timestamp: new Date()
+          });
+  
+          // ✅ Send notification to assignee if card was assigned
+          if (updates.assigneeEmail && updates.assigneeEmail !== oldValues.assigneeEmail) {
+            io.to(`board_${updatedCard!.column.board.id}`).emit('card_assigned', {
+              card: updatedCard,
+              assigneeEmail: updates.assigneeEmail,
+              assignedBy: userId,
+              timestamp: new Date()
+            });
+          }
+        }
+  
         const response: ApiResponse = {
           success: true,
-          data: { card },
+          data: { card: updatedCard },
           message: 'Card updated successfully'
         };
         res.status(200).json(response);
+  
       } finally {
-        // Release lock
-        await redis.del(lockKey);
+        // ✅ Release Redis lock
+        if (lockKey && redis) {
+          await redis.del(lockKey);
+        }
       }
+  
     } catch (error: any) {
       console.error('Update card error:', error);
+      
       const response: ApiResponse = {
         success: false,
         error: error.name === 'SequelizeValidationError' 
           ? error.errors.map((e: any) => e.message).join(', ')
           : 'Failed to update card'
       };
-      res.status(400).json(response);
+      res.status(500).json(response);
     }
   }
-
+  
   static async moveCard(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { cardId, targetColumnId, newPosition }: MoveCardRequest = req.body;

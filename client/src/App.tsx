@@ -42,6 +42,7 @@ const Dashboard: React.FC = () => {
     const token = localStorage.getItem('token');
     if (token) {
       fetchBoards(token);
+      setIsLoading(false)
     } else {
       setIsLoading(false);
     }
@@ -50,6 +51,7 @@ const Dashboard: React.FC = () => {
  
 
   const initializeSocket = (token: string) => {
+    console.log("staryed",token)
     const newSocket = io('/', { auth: { token } });
     newSocket.on('connect', () => console.log('🔗 Connected to server'));
     newSocket.on('disconnect', () => console.log('📡 Disconnected from server'));
@@ -57,6 +59,7 @@ const Dashboard: React.FC = () => {
   };
 
   const fetchBoards = async (token: string) => {
+    
     try {
       const response = await axios.get('/api/boards', {
         headers: { Authorization: `Bearer ${token}` }
@@ -64,6 +67,7 @@ const Dashboard: React.FC = () => {
       
       if (response.data.success) {
         setBoards(response.data.data.boards);
+        console.log("2")
       }
     } catch (error) {
       console.error('Failed to fetch boards:', error);
