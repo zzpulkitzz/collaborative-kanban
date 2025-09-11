@@ -7,6 +7,7 @@ import { io } from '../server';
 import redis from '../config/redis';
 import {Op} from 'sequelize';
 import { sendAssignmentEmail } from '../utils/sendEmail';
+import Notification from '../models/Notifications';
 export class CardController {
   static async createCard(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
@@ -199,6 +200,36 @@ export class CardController {
           ]
         });
         
+        const cardOwnerId = updatedCard!.column.board.ownerId;
+        const editingUserId = userId;
+        
+        // If the editing user is NOT the owner and *is* the assignee:
+        if (
+          editingUserId !== cardOwnerId &&
+          updatedCard!.assigneeId === editingUserId
+        ) {
+          await Notification.create({
+            userId: cardOwnerId,
+            boardId: updatedCard!.column.board.id,
+            cardId: updatedCard!.id,
+            type: 'card_edited',
+            message: `${updatedCard!.assignee?.fullName || updatedCard!.assignee?.username || 'A collaborator'} edited card "${updatedCard!.title}".`,
+            isRead: false,
+          });
+        
+          // Optional: Emit real-time notification to the board owner
+    
+
+            io.to(`user_${cardOwnerId}`).emit('new_notification', {
+              type: 'card_edited',
+              cardTitle: updatedCard!.title,
+              message: `${updatedCard!.assignee?.fullName || updatedCard!.assignee?.username || 'A collaborator'} edited card "${updatedCard!.title}".`,
+              cardId: updatedCard!.id,
+              boardId: updatedCard!.column.board.id,
+              createdAt: new Date(),
+            });
+          
+        }
         // 🌟 Send email if assigneeEmail changed and is not empty
     if (
       updates.assigneeEmail &&
@@ -239,8 +270,8 @@ export class CardController {
         });
   
         // ✅ Emit real-time update to board members
-        const io = req.app.get('io'); // Assuming you store io in app
-        if (io) {
+         // Assuming you store io in app
+        
           io.to(`board_${updatedCard!.column.board.id}`).emit('card_updated', {
             card: updatedCard,
             boardId: updatedCard!.column.board.id,
@@ -258,7 +289,7 @@ export class CardController {
               timestamp: new Date()
             });
           }
-        }
+        
   
         const response: ApiResponse = {
           success: true,

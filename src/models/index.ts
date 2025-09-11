@@ -4,6 +4,7 @@ import Board from './Board';
 import Column from './Column';
 import Card from './Card';
 import AuditLog from './AuditLog';
+import Notification from './Notifications';
 
 // Define associations
 const setupAssociations = (): void => {
@@ -32,6 +33,15 @@ const setupAssociations = (): void => {
   // Column associations
   Column.hasMany(Card, { foreignKey: 'columnId', as: 'cards', onDelete: 'CASCADE' });
   Card.belongsTo(Column, { foreignKey: 'columnId', as: 'column' });
+
+  User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
+  Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+  Board.hasMany(Notification, { foreignKey: 'boardId', as: 'notifications' });
+  Notification.belongsTo(Board, { foreignKey: 'boardId', as: 'board' });
+
+  Card.hasMany(Notification, { foreignKey: 'cardId', as: 'notifications' });
+  Notification.belongsTo(Card, { foreignKey: 'cardId', as: 'card' });
 
   // Additional card associations for audit logs
  /*  Card.hasMany(AuditLog, { foreignKey: 'entityId', as: 'auditLogs', scope: { entityType: 'card' } }); */
