@@ -108,6 +108,7 @@ export class CardController {
       res.status(201).json(response);
     } catch (error: any) {
       console.error('Create card error:', error);
+      console.log(error.response.body.errors)
       const response: ApiResponse = {
         success: false,
         error: error.name === 'SequelizeValidationError' 
