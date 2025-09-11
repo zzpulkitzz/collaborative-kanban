@@ -46,7 +46,8 @@ export const initializeWebSocket = (io: Server) => {
 
   io.on('connection', (socket) => {
     console.log(`🔗 User ${(socket as any).userData.username} connected`);
-
+    const userId = (socket as any).userData.id; // Ensure this is available on connection
+    socket.join(`user_${userId}`)
     // Handle joining a board
     socket.on('join_board', (boardId: string) => {
       console.log(`👋 ${(socket as any).userData.username} joined board ${boardId}`);
