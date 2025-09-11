@@ -47,3 +47,22 @@
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+.drag-overlay {
+  cursor: grabbing !important;
+}
+
+.drop-zone-active {
+  background-color: rgba(59, 130, 246, 0.1);
+  border: 2px dashed rgba(59, 130, 246, 0.5);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}

@@ -1,176 +1,179 @@
-import { Server as SocketIOServer, Socket } from 'socket.io';
-import { JwtPayload } from '../types/auth';
-import { SocketUser, WebSocketEvent } from '../types/websocket';
-import { PresenceService } from '../services/presenceService';
+import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
+import { User } from '../models';
 
-interface AuthenticatedSocket extends Socket {
-  user?: SocketUser;
-  currentBoards?: Set<string>;
+// Store active users per board
+const boardPresence = new Map<string, Map<string, UserPresence>>();
+
+interface UserPresence {
+  userId: string;
+  username: string;
+  fullName?: string;
+  avatar?: string;
+  joinedAt: Date;
+  socketId: string;
 }
 
-export function initializeWebSocket(io: SocketIOServer): void {
+export const initializeWebSocket = (io: Server) => {
   // Authentication middleware
-  io.use((socket: AuthenticatedSocket, next) => {
-    const token = socket.handshake.auth.token;
-    
-    if (!token) {
-      return next(new Error('Authentication token required'));
-    }
-
+  io.use(async (socket, next) => {
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
-      socket.user = {
-        id: decoded.userId,
-        username: decoded.username,
-        email: decoded.email
+      const token = socket.handshake.auth.token;
+      if (!token) {
+        return next(new Error('Authentication error'));
+      }
+
+      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+      const user = await User.findByPk(decoded.userId);
+      
+      if (!user) {
+        return next(new Error('User not found'));
+      }
+
+      (socket as any).userId = user.id;
+      (socket as any).userData = {
+        id: user.id,
+        username: user.username,
+        fullName: user.fullName,
+        avatar: user.avatar
       };
-      socket.currentBoards = new Set();
+      
       next();
     } catch (error) {
-      next(new Error('Invalid authentication token'));
+      next(new Error('Authentication error'));
     }
   });
 
-  io.on('connection', (socket: AuthenticatedSocket) => {
-    console.log(`✅ User ${socket.user?.username} connected with socket ${socket.id}`);
+  io.on('connection', (socket) => {
+    console.log(`🔗 User ${(socket as any).userData.username} connected`);
 
-    // Join board room
-    socket.on('join_board', async (boardId: string) => {
-      try {
-        socket.join(`board_${boardId}`);
-        socket.currentBoards?.add(boardId);
-        
-        // Add user to presence
-        if (socket.user) {
-          await PresenceService.addUserToBoard(boardId, socket.user);
-          
-          // Get current users and notify others
-          const boardUsers = await PresenceService.getBoardUsers(boardId);
-          
-          // Send current users to the joining user
-          socket.emit('board_users', { boardId, users: boardUsers });
-          
-          // Notify others about new user
-          socket.to(`board_${boardId}`).emit('user_joined', {
-            boardId,
-            user: socket.user,
-            timestamp: new Date()
-          });
-        }
-        
-        console.log(`User ${socket.user?.username} joined board ${boardId}`);
-      } catch (error) {
-        console.error('Error joining board:', error);
-        socket.emit('error', { message: 'Failed to join board' });
-      }
-    });
-
-    // Leave board room
-    socket.on('leave_board', async (boardId: string) => {
-      try {
-        socket.leave(`board_${boardId}`);
-        socket.currentBoards?.delete(boardId);
-        
-        if (socket.user) {
-          await PresenceService.removeUserFromBoard(boardId, socket.user.id);
-          
-          // Notify others about user leaving
-          socket.to(`board_${boardId}`).emit('user_left', {
-            boardId,
-            userId: socket.user.id,
-            username: socket.user.username,
-            timestamp: new Date()
-          });
-        }
-        
-        console.log(`User ${socket.user?.username} left board ${boardId}`);
-      } catch (error) {
-        console.error('Error leaving board:', error);
-      }
-    });
-
-    // Handle typing indicators
-    socket.on('typing_start', async (data: { cardId: string; boardId: string }) => {
-      try {
-        if (socket.user) {
-          await PresenceService.setUserTyping(data.cardId, socket.user, true);
-          
-          socket.to(`board_${data.boardId}`).emit('user_typing', {
-            cardId: data.cardId,
-            userId: socket.user.id,
-            username: socket.user.username,
-            isTyping: true,
-            timestamp: new Date()
-          });
-        }
-      } catch (error) {
-        console.error('Error handling typing start:', error);
-      }
-    });
-
-    socket.on('typing_stop', async (data: { cardId: string; boardId: string }) => {
-      try {
-        if (socket.user) {
-          await PresenceService.setUserTyping(data.cardId, socket.user, false);
-          
-          socket.to(`board_${data.boardId}`).emit('user_typing', {
-            cardId: data.cardId,
-            userId: socket.user.id,
-            username: socket.user.username,
-            isTyping: false,
-            timestamp: new Date()
-          });
-        }
-      } catch (error) {
-        console.error('Error handling typing stop:', error);
-      }
-    });
-
-    // Handle optimistic updates acknowledgment
-    socket.on('optimistic_update_ack', (data: { eventId: string; success: boolean }) => {
-      // Handle optimistic update acknowledgments
-      console.log(`Optimistic update ${data.eventId}: ${data.success ? 'success' : 'failed'}`);
-    });
-
-    // Handle disconnection
-    socket.on('disconnect', async (reason: string) => {
-      console.log(`❌ User ${socket.user?.username} disconnected: ${reason}`);
+    // Handle joining a board
+    socket.on('join_board', (boardId: string) => {
+      console.log(`👋 ${(socket as any).userData.username} joined board ${boardId}`);
       
-      // Clean up presence for all boards user was in
-      if (socket.user && socket.currentBoards) {
-        for (const boardId of socket.currentBoards) {
-          try {
-            await PresenceService.removeUserFromBoard(boardId, socket.user.id);
-            
-            // Notify others about user leaving
-            socket.to(`board_${boardId}`).emit('user_left', {
-              boardId,
-              userId: socket.user.id,
-              username: socket.user.username,
-              timestamp: new Date()
-            });
-          } catch (error) {
-            console.error('Error cleaning up presence on disconnect:', error);
-          }
-        }
+      // Leave any previous board rooms
+      Array.from(socket.rooms)
+        .filter(room => room.startsWith('board_'))
+        .forEach(room => socket.leave(room));
+
+      // Join the new board room
+      const roomName = `board_${boardId}`;
+      socket.join(roomName);
+
+      // Add user to presence tracking
+      if (!boardPresence.has(boardId)) {
+        boardPresence.set(boardId, new Map());
       }
+
+      const boardUsers = boardPresence.get(boardId)!;
+      boardUsers.set((socket as any).userData.id, {
+        userId: (socket as any).userData.id,
+        username: (socket as any).userData.username,
+        fullName: (socket as any).userData.fullName,
+        avatar: (socket as any).userData.avatar,
+        joinedAt: new Date(),
+        socketId: socket.id
+      });
+
+      // Broadcast updated presence to all users in the board
+      const presenceList = Array.from(boardUsers.values()).map(user => ({
+        userId: user.userId,
+        username: user.username,
+        fullName: user.fullName,
+        avatar: user.avatar,
+        joinedAt: user.joinedAt
+      }));
+
+      // Notify all users in the board about updated presence
+      io.to(roomName).emit('presence_updated', {
+        users: presenceList,
+        totalUsers: presenceList.length
+      });
+
+      // Notify others about new user joining (optional notification)
+      socket.to(roomName).emit('user_joined', {
+        user: {
+          userId: (socket as any).userData.id,
+          username: (socket as any).userData.username,
+          fullName: (socket as any).userData.fullName
+        }
+      });
     });
 
-    // Handle ping/pong for connection health
-    socket.on('ping', () => {
-      socket.emit('pong');
+    // Handle leaving a board
+    socket.on('leave_board', (boardId: string) => {
+      handleUserLeaveBoard(socket, boardId);
+    });
+
+    // Handle disconnect
+    socket.on('disconnect', () => {
+      console.log(`📡 User ${(socket as any).userData.username} disconnected`);
+      
+      // Remove user from all board presence
+      boardPresence.forEach((users, boardId) => {
+        if (users.has((socket as any).userData.id)) {
+          users.delete((socket as any).userData.id);
+          
+          // Broadcast updated presence
+          const presenceList = Array.from(users.values()).map(user => ({
+            userId: user.userId,
+            username: user.username,
+            fullName: user.fullName,
+            avatar: user.avatar,
+            joinedAt: user.joinedAt
+          }));
+
+          io.to(`board_${boardId}`).emit('presence_updated', {
+            users: presenceList,
+            totalUsers: presenceList.length
+          });
+
+          // Notify about user leaving
+          io.to(`board_${boardId}`).emit('user_left', {
+            user: {
+              userId: (socket as any).userData.id,
+              username: (socket as any).userData.username
+            }
+          });
+        }
+      });
+    });
+
+    // Your existing card/board event handlers remain the same...
+    socket.on('card_created', (data) => {
+      socket.to(`board_${data.boardId}`).emit('card_created', data);
+    });
+
+    socket.on('card_moved', (data) => {
+      socket.to(`board_${data.boardId}`).emit('card_moved', data);
+    });
+
+    socket.on('card_updated', (data) => {
+      socket.to(`board_${data.boardId}`).emit('card_updated', data);
     });
   });
 
-  // Periodic cleanup of expired presence data
-  setInterval(async () => {
-    try {
-      await PresenceService.cleanupExpiredPresence();
-    } catch (error) {
-      console.error('Error during presence cleanup:', error);
-    }
-  }, 60000); // Every minute
+  // Helper function to handle user leaving board
+  const handleUserLeaveBoard = (socket: any, boardId: string) => {
+    const roomName = `board_${boardId}`;
+    socket.leave(roomName);
 
-  console.log('🔌 WebSocket server initialized with enhanced features');
-}
+    const boardUsers = boardPresence.get(boardId);
+    if (boardUsers && boardUsers.has(socket.userData.id)) {
+      boardUsers.delete(socket.userData.id);
+
+      const presenceList = Array.from(boardUsers.values()).map(user => ({
+        userId: user.userId,
+        username: user.username,
+        fullName: user.fullName,
+        avatar: user.avatar,
+        joinedAt: user.joinedAt
+      }));
+
+      io.to(roomName).emit('presence_updated', {
+        users: presenceList,
+        totalUsers: presenceList.length
+      });
+    }
+  };
+};

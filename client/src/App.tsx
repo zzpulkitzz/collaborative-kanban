@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { io, Socket } from 'socket.io-client';
 import BoardView from './components/BoardView.tsx';
+import CreateBoardModal from './components/CreateBoardModal';
+import { BrowserRouter as Router, Routes, Route, useParams, Navigate } from 'react-router-dom';
+import { UserProvider } from './contexts/userContext.tsx';
+import { useUser } from './contexts/userContext.tsx';
 
 interface User {
   id: string;
@@ -17,13 +21,16 @@ interface Board {
   backgroundColor?: string;
 }
 
-const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(null);
+const Dashboard: React.FC = () => {
+  const { user, setUser } = useUser();
+  
   const [boards, setBoards] = useState<Board[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLogin, setIsLogin] = useState(true);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isCreatingBoard, setIsCreatingBoard] = useState(false);
 
   // Form states
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
@@ -34,30 +41,13 @@ const App: React.FC = () => {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      fetchUserProfile(token);
+      fetchBoards(token);
     } else {
       setIsLoading(false);
     }
   }, []);
 
-  const fetchUserProfile = async (token: string) => {
-    try {
-      const response = await axios.get('/api/auth/profile', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      if (response.data.success) {
-        setUser(response.data.data.user);
-        initializeSocket(token);
-        fetchBoards(token);
-      }
-    } catch (error) {
-      console.error('Failed to fetch profile:', error);
-      localStorage.removeItem('token');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+ 
 
   const initializeSocket = (token: string) => {
     const newSocket = io('/', { auth: { token } });
@@ -125,14 +115,12 @@ const App: React.FC = () => {
     }
   };
 
-  const createBoard = async () => {
-    const title = prompt('🏷️ Enter board title:');
-    if (!title) return;
-
+  const createBoard = async (boardData: { title: string; description: string; backgroundColor: string }) => {
+    setIsCreatingBoard(true);
     try {
       const token = localStorage.getItem('token');
       const response = await axios.post('/api/boards', 
-        { title, description: 'Created from web app' },
+        boardData,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -141,6 +129,8 @@ const App: React.FC = () => {
       }
     } catch (error: any) {
       alert('❌ Failed to create board: ' + (error.response?.data?.error || 'Unknown error'));
+    } finally {
+      setIsCreatingBoard(false);
     }
   };
 
@@ -149,7 +139,8 @@ const App: React.FC = () => {
     return (
       <BoardView 
         boardId={selectedBoardId} 
-        onBack={() => setSelectedBoardId(null)} 
+        onBack={() => setSelectedBoardId(null)}
+        user={user}
       />
     );
   }
@@ -330,16 +321,24 @@ const App: React.FC = () => {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Create Board Button */}
         <div className="mb-8">
-          <button
-            onClick={createBoard}
-            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors shadow-sm"
-          >
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-            </svg>
-            Create New Board
-          </button>
-        </div>
+    <button
+      onClick={() => setIsCreateModalOpen(true)}
+      className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors shadow-sm"
+    >
+      <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+      </svg>
+      Create New Board
+    </button>
+
+    {/* Add the modal */}
+    <CreateBoardModal
+      isOpen={isCreateModalOpen}
+      onClose={() => setIsCreateModalOpen(false)}
+      onSubmit={createBoard}
+      isLoading={isCreatingBoard}
+    />
+  </div>
 
         {/* Boards Grid */}
         {boards.length > 0 ? (
@@ -380,7 +379,7 @@ const App: React.FC = () => {
               Get started by creating your first board to organize your projects and collaborate with your team.
             </p>
             <button
-              onClick={createBoard}
+              onClick={() => setIsCreateModalOpen(true)}
               className="btn-primary inline-flex items-center"
             >
               <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -394,5 +393,37 @@ const App: React.FC = () => {
     </div>
   );
 };
+const BoardRoute: React.FC = () => {
+  const { boardId } = useParams<{ boardId: string }>();
+  const { user, isLoading } = useUser();
+  if (isLoading) {
+    return <div>Loading...</div>;
+  }
+
+  if (!user) {
+    return <Navigate to="/" replace />;
+  }
+  if (!boardId) {
+    return <Navigate to="/" replace />;
+  }
+
+  return <BoardView boardId={boardId} onBack={() => window.history.back()} user={user} />;
+};
+
+const App: React.FC = () => {
+  return (
+    <Router>
+      <UserProvider>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/board/:boardId" element={<BoardRoute />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      </UserProvider>
+    </Router>
+  );
+};
 
 export default App;
+
+

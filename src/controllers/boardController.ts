@@ -124,9 +124,10 @@ export class BoardController {
     try {
       const { boardId } = req.params;
       const userId = req.user!.id;
-
+      console.log("yoooo")
+      console.log(userId, boardId)
       const board = await Board.findOne({
-        where: { id: boardId, ownerId: userId },
+         where: {id: boardId}, //{ id: boardId, ownerId: userId },
         include: [
           {
             model: Column,
